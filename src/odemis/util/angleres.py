@@ -77,8 +77,6 @@ def _ExtractAngleInformation(data, hole):
 
     pole_pos = (pole_x, pole_y)
 
-    # TODO flip data here
-
     # Crop the input image to half circle (set values outside of half circle zero)
     cropped_image = _CropHalfCircle(data, pixel_size, pole_pos, hole=hole)
 
@@ -103,7 +101,11 @@ def _ExtractAngleInformation(data, hole):
     y_pos = (y_indices - pole_pos[1]) + (2 * parabola_f) / pixel_size[0]  # y coordinates of the pixels (vertical)
     # invert y axis in case of inverted mirror
     if focus_distance < 0:
-        y_pos = y_pos[::-1]
+        y_indices = y_indices[::-1]
+        # y coordinates of the pixels (vertical); needs a special correction for the y pole pos as indices inverted
+        # TODO some more commenting
+        # TODO could it be that we move by one pixel onto the wrong position?
+        y_pos = (y_indices - pole_pos[1] + (2 * pole_pos[1] - data.shape[0])) + (2 * parabola_f) / pixel_size[0]
 
     # create two arrays with set of x and y coordinates and with same shape of data
     x_array, y_array = numpy.meshgrid(x_pos, y_pos)
@@ -435,10 +437,11 @@ def _CreateMirrorMask(data, pixel_size, pole_pos, offset_radius=0, hole=True):
         lower_y = pole_y + ((2 * parabola_f + focus_distance) / pixel_size[1])
         # check that center of mask is located within image (e.g. if mask at the edge of image not cutoff)
         if (lower_y + offset_radius) < Y:
-            circle_mask[int(lower_y) - offset_radius:, :] = False
+            circle_mask[int(lower_y) + offset_radius:, :] = False
 
     # Crop the pole making hole of hole_diameter
     # For delaunay triangulation hole=False: to avoid edge effects
+    # TODO check why hole different when inverted mirror (squared?)
     if hole:
         r_hole = (hole_diameter / 2) / pixel_size[1]
         y, x = numpy.ogrid[-pole_y:Y - pole_y, -pole_x:X - pole_x]
