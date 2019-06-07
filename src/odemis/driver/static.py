@@ -73,6 +73,8 @@ class OpticalLens(model.HwComponent):
         rotation (0<float<2*pi): rotation between the Y axis of the SEM
           referential and the optical path axis. Used on the SPARC to report
           the rotation between the AR image and the SEM image.
+        configurations (enumerated string): "Mirror up" or "Mirror down". Used to indicate
+          the position of the mirror. It updates the VAs focus_dist and pole_pos.
         """
         assert (mag > 0)
         model.HwComponent.__init__(self, name, role, **kwargs)
@@ -113,6 +115,7 @@ class OpticalLens(model.HwComponent):
                                                   unit="rad")
         if configurations is not None:
             self._configurations = configurations
+            # conf = [pole_pos: self.polePosition,  focus_dist: self.focusDistance]
             conf = list(configurations.keys())[0]
             self.configuration = model.StringEnumerated(conf, choices=set(configurations.keys()), setter=self._setConfiguration)
 

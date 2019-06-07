@@ -70,9 +70,18 @@ class TestOpticalLens(unittest.TestCase):
         comp.terminate()
 
     def test_configurations(self):
+        pole_pos = [458, 519]
+        focus_dist = 0
         configurations = {"Mirror up": {pole_pos: [458, 519], focus_dist: 0.5e-3},
                           "Mirror down": {pole_pos: [634, 652], focus_dist: -0.5e-3}}
         comp = static.OpticalLens("test", "lens", 1, configurations_choices=configurations)
+        comp.key = "Mirror up"
+        self.assertEqual(pole_pos, [458, 519])
+        self.assertEqual(focus_dist, 0.5e-3)
+
+        comp.key = "Mirror down"
+        self.assertEqual(pole_pos, [634, 652])
+        self.assertEqual(focus_dist, -0.5e-3)
 
 class TestSpectrograph(unittest.TestCase):
     @timeout(3)

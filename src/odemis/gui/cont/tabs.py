@@ -2985,10 +2985,10 @@ class Sparc2AlignTab(Tab):
         panel.html_moi_doc.SetBorders(0)
         panel.html_moi_doc.LoadPage(self.doc_path)
 
-        if main_data.lens:  # TODO do we need this or is lens not always there?
-            lens = main_data.lens
-            if model.hasVA(lens, "configuration"):
-                self._centering_settings_controller = settings.CenterAlignSettingsController(panel, tab_data)
+
+        lens = main_data.lens
+        if model.hasVA(lens, "configuration"):
+            self._centering_settings_controller = settings.CenterAlignSettingsController(panel, tab_data)
 
         if main_data.streak_ccd:
             self._streak_settings_controller = settings.StreakCamAlignSettingsController(panel, tab_data)
@@ -4016,6 +4016,7 @@ class Sparc2AlignTab(Tab):
             self._moi_stream.is_active.value = True
         self.panel.vp_moi.canvas.fit_view_to_next_image = True
 
+    @call_in_wx_main
     def _onMirrorDimensions(self, focusDistance):
         try:
             self.mirror_ol.set_mirror_dimensions(self.lens.parabolaF.value,

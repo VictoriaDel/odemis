@@ -1523,6 +1523,7 @@ class MirrorArcOverlay(WorldOverlay, DragMixin):
         hole_diam (float): diameter the hole in the mirror in m
         """
         self.flipped = (cut_offset_y < 0) # focus_dist - the vertical mirror cutoff can be positive or negative
+        # The mirror is cut horizontally just above the symmetry line
         self.cut_offset_y = abs(cut_offset_y)
 
         # The radius of the circle shaped edge facing the detector
@@ -1530,13 +1531,8 @@ class MirrorArcOverlay(WorldOverlay, DragMixin):
         # Use the formula y = x²/4f
         self.parabole_cut_radius = 2 * math.sqrt(parabola_f * cut_x)
 
-        # # The mirror is cut horizontally just above the symmetry line
-        # self.cut_offset_y = cut_offset_y
-
-        # self.mirror_height = self.parabole_cut_radius - cut_offset_y
         self.mirror_height = self.parabole_cut_radius - self.cut_offset_y
         # The number of radians to remove from the left and right of the semi-circle
-        # self.rad_offset = math.atan2(cut_offset_y, self.parabole_cut_radius)
         self.rad_offset = math.atan2(self.cut_offset_y, self.parabole_cut_radius)
 
         # The radius of the hole through which the electron beam enters

@@ -72,8 +72,6 @@ def _ExtractAngleInformation(data, hole):
         pole_x, pole_y = data.metadata[model.MD_AR_POLE]
         parabola_f = data.metadata.get(model.MD_AR_PARABOLA_F, AR_PARABOLA_F)
         focus_distance = data.metadata.get(model.MD_AR_FOCUS_DISTANCE, AR_FOCUS_DISTANCE)
-        # TODO new MD for inverted mirror or not?
-        # focus_dist = model.AR_FOCUS_DISTANCE
     except KeyError:
         raise ValueError("Metadata required: MD_PIXEL_SIZE, MD_AR_POLE.")
 

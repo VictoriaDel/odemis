@@ -9,7 +9,7 @@ __res = None
 def get_resources():
     """ This function provides access to the XML resources in this module."""
     global __res
-    if __res is None:
+    if __res == None:
         __init_resources()
     return __res
 
@@ -624,7 +624,7 @@ class xrcfr_plugin(wx.Dialog):
 
 def __init_resources():
     global __res
-    __res = xrc.EmptyXmlResource()
+    __res = xrc.XmlResource()
 
     wx.FileSystem.AddHandler(wx.MemoryFSHandler())
 
