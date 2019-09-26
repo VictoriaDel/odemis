@@ -112,6 +112,7 @@ class DblMicroscopeCanvas(canvas.DraggableCanvas):
         self.points_overlay = None
         self.line_overlay = None
         self.dicho_overlay = None
+        self.ruler_overlay = None
 
         # play/pause icon
         self.play_overlay = view_overlay.PlayIconOverlay(self)
@@ -198,6 +199,12 @@ class DblMicroscopeCanvas(canvas.DraggableCanvas):
         tools_possible = set(tab_data.tool.choices)
         if self.allowed_modes:
             tools_possible &= self.allowed_modes
+
+        if guimodel.TOOL_RULER in tools_possible:
+            self.ruler_overlay = world_overlay.RulerSelectOverlay(self, tab_data.tool)
+            # Ruler selection overlay: always shown & active
+            self.add_world_overlay(self.ruler_overlay)
+            self.ruler_overlay.activate()
 
         if guimodel.TOOL_ROA in tools_possible:
             # Get the region of interest and link it to the ROA overlay
