@@ -64,6 +64,8 @@ class Label(object):
         self.render_pos = None
         self.text_size = None
 
+        self._font_name = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT).GetFaceName()
+
     @property
     def text(self):
         return self._text
@@ -115,6 +117,119 @@ class Label(object):
     def _clear_cache(self):
         self.render_pos = None
         self.text_size = None
+
+    def draw(self, ctx):
+        # No text? Do nothing
+        if not self._text:
+            return
+
+        # Cache the current context settings
+        ctx.save()
+
+        # TODO: Look at ScaledFont for additional caching
+        ctx.select_font_face(self._font_name, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+
+        # For some reason, fonts look a little bit smaller when Cairo
+        # plots them at an angle. We compensate for that by increasing the size
+        # by 1 point in that case, so the size visually resembles that of
+        # straight text.
+        if self._deg not in (0.0, 180.0, None):
+            ctx.set_font_size(self._font_size + 1)
+        else:
+            ctx.set_font_size(self._font_size)
+
+        # Rotation always happens at the plot coordinates
+        if self._deg is not None:
+            phi = math.radians(self._deg)
+            rx, ry = self._pos
+
+            if self.flip:
+                phi -= math.pi
+
+            ctx.translate(rx, ry)
+            ctx.rotate(phi)
+            ctx.translate(-rx, -ry)
+
+        # Take care of newline characters
+        parts = self._text.split("\n")
+
+        # Calculate the rendering position
+        if not self.render_pos:
+            x, y = self._pos
+
+            lw, lh = 0, 0
+            plh = self._font_size  # default to font size, but should always get updated
+            for p in parts:
+                plw, plh = ctx.text_extents(p)[2:4]
+                lw = max(lw, plw)
+                lh += plh
+
+            # Cairo renders text from the bottom left, but we want to treat
+            # the top left as the origin. So we need to add the height (lower the
+            # render point), to make the given position align with the top left.
+            y += plh
+
+            if isinstance(self, ViewOverlay):
+                # Apply padding
+                x = max(min(x, self.view_width - self.canvas_padding), self.canvas_padding)
+                y = max(min(y, self.view_height - self.canvas_padding), self.canvas_padding)
+
+            # Horizontally align the label
+            if self._align & wx.ALIGN_RIGHT:
+                x -= lw
+            elif self._align & wx.ALIGN_CENTRE_HORIZONTAL:
+                x -= lw / 2.0
+
+            # Vertically align the label
+            if self._align & wx.ALIGN_BOTTOM:
+                y -= lh
+            elif self._align & wx.ALIGN_CENTER_VERTICAL:
+                y -= lh / 2.0
+
+            # When we rotate text, flip gets a different meaning
+            if self._deg is None and self.flip:
+                if isinstance(self, ViewOverlay):
+                    width = self.view_width
+                    height = self.view_height
+
+                    # Prevent the text from running off screen
+                    if x + lw + self.canvas_padding > width:
+                        x = width - lw
+                    elif x < self.canvas_padding:
+                        x = self.canvas_padding
+                    if y + lh + self.canvas_padding > height:
+                        y = height - lh
+                    elif y < lh:
+                        y = lh
+
+            self.render_pos = x, y
+            self.text_size = lw, lh
+        else:
+            x, y = self.render_pos
+
+        # Draw Shadow
+        if self.colour:
+            ctx.set_source_rgba(0.0, 0.0, 0.0, 0.7 * self.opacity)
+            ofst = 0
+            for part in parts:
+                ctx.move_to(x + 1, y + 1 + ofst)
+                ofst += self._font_size
+                ctx.show_text(part)
+
+        # Draw Text
+        if self.colour:
+            if len(self.colour) == 3:
+                ctx.set_source_rgba(*(self.colour + (self.opacity,)))
+            else:
+                ctx.set_source_rgba(*self.colour)
+
+        ofst = 0
+        for part in parts:
+            ctx.move_to(x, y + ofst)
+            ofst += self._font_size + 1
+            ctx.show_text(part)
+
+        ctx.restore()
 
 
 class Vec(tuple):
@@ -228,13 +343,16 @@ class Overlay(with_metaclass(ABCMeta, object)):
     def clear_labels(self):
         self.labels = []
 
+    # def _write_labels(self, ctx):
+    #     """ Render all the defined labels to the screen """
+    #     for label in self.labels:
+    #         self._write_label(ctx, label)
     def _write_labels(self, ctx):
         """ Render all the defined labels to the screen """
         for label in self.labels:
-            self._write_label(ctx, label)
+            label.draw(ctx)
 
     def _write_label(self, ctx, l):
-
         # No text? Do nothing
         if not l.text:
             return
@@ -568,8 +686,6 @@ class SelectionMixin(DragMixin):
     def start_selection(self):
         """ Start a new selection """
 
-        logging.debug("Starting selection")
-
         self.selection_mode = SEL_MODE_CREATE
         self.select_v_start_pos = self.select_v_end_pos = self.drag_v_start_pos
 
@@ -581,8 +697,6 @@ class SelectionMixin(DragMixin):
 
     def stop_selection(self):
         """ End the creation of the current selection """
-
-        logging.debug("Stopping selection")
 
         if max(self.get_height(), self.get_width()) < gui.SELECTION_MINIMUM:
             logging.debug("Selection too small")

@@ -31,7 +31,7 @@ from odemis.acq.stream import UNDEFINED_ROI
 from odemis.driver import simsem
 from odemis.gui.comp.overlay import view as vol
 from odemis.gui.comp.overlay import world as wol
-from odemis.gui.model import TOOL_POINT, TOOL_LINE
+from odemis.gui.model import TOOL_POINT, TOOL_LINE, TOOL_RULER
 from odemis.util.conversion import hex_to_frgb
 import unittest
 import wx

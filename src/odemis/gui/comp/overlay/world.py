@@ -27,11 +27,13 @@ from __future__ import division
 import cairo
 import logging
 import math
+
 from odemis import model, util
 from odemis.acq.stream import UNDEFINED_ROI
 from odemis.gui import img
-from odemis.gui.comp.overlay.base import Vec, WorldOverlay, SelectionMixin, DragMixin, \
+from odemis.gui.comp.overlay.base import Vec, WorldOverlay, Label, SelectionMixin, DragMixin, \
     PixelDataMixin, SEL_MODE_EDIT, SEL_MODE_CREATE, EDIT_MODE_BOX, EDIT_MODE_POINT, SpotModeBase
+from odemis.gui.model import TOOL_RULER, TOOL_NONE
 from odemis.gui.util.raster import rasterize_line
 from odemis.util import clip_line
 import wx
@@ -831,6 +833,533 @@ class SpotModeOverlay(WorldOverlay, DragMixin, SpotModeBase):
         self.p_pos = None
         WorldOverlay.deactivate(self)
 
+NONE_RULER_MODE = 0
+MOVE_RULER_MODE = 1
+EDIT_START_RULER_MODE = 2
+EDIT_END_RULER_MODE = 3
+
+
+class Ruler(object):
+
+    hover_margin = 10  # pixels
+
+    def __init__(self, cnvs, ruler_label, drag_v_start_pos, drag_v_end_pos):
+
+        self.cnvs = cnvs
+
+        self.ruler_label = ruler_label
+
+        self.drag_v_start_pos = drag_v_start_pos
+        self.drag_v_end_pos = drag_v_end_pos
+
+        self.v_start_pos = None  # view coordinates in pixels
+        self.v_end_pos = None
+
+        self.p_start_pos = None  # physical coordinates in meters
+        self.p_end_pos = None
+
+        self.edit_hover = None  # It stores the edge that is being edited
+
+        self.hover = gui.HOVER_NONE
+
+        self.last_shiftscale = None  # It is used in case the canvas has shifted or scaled
+
+        self.mode = NONE_RULER_MODE
+        self.ruler_edges = {}  # the virtual edges of the ruler
+        self.colour = conversion.hex_to_frgba(gui.SELECTION_COLOUR)
+        self.highlight = conversion.hex_to_frgba(gui.FG_COLOUR_HIGHLIGHT)  # when the ruler is selected
+
+    def __str__(self):
+        return "Ruler %g,%g -> %g,%g" % (self.p_start_pos[0], self.p_start_pos[1],
+                                         self.p_end_pos[0], self.p_end_pos[1])
+
+    def _view_to_phys(self):
+        """ Update the physical position to reflect the view position """
+
+        if self.v_start_pos and self.v_end_pos:
+            offset = self.cnvs.get_half_buffer_size()
+            self.p_start_pos = self.cnvs.view_to_phys(self.v_start_pos, offset)
+            self.p_end_pos = self.cnvs.view_to_phys(self.v_end_pos, offset)
+            self.calc_ruler_edges()
+
+    def start_dragging(self, drag, vpos):
+        """
+        The user can start dragging (creating/editing/moving) the ruler when the left mouse button is pressed down
+        Args:
+            drag: hover mode (HOVER_START, HOVER_LINE, HOVER_END)
+            vpos: the view coordinates of the mouse cursor once left click mouse event is fired
+
+        Returns:
+
+        """
+
+        self.drag_v_start_pos = self.drag_v_end_pos = vpos
+        if drag == gui.HOVER_START:
+            self.edit_hover = drag
+            self.mode = EDIT_START_RULER_MODE
+        elif drag == gui.HOVER_END:
+            self.edit_hover = drag
+            self.mode = EDIT_END_RULER_MODE
+        elif drag == gui.HOVER_LINE:
+            self.mode = MOVE_RULER_MODE
+        self._view_to_phys()
+
+    def on_motion(self, vpos):
+        """
+        Given that the left mouse button is already pressed down and the mouse cursor is over the ruler,
+        the user can drag (create/edit/move) the ruler until the left button is released.
+        Args:
+            vpos:
+
+        Returns:
+
+        """
+
+        self.drag_v_end_pos = vpos
+
+        if self.mode != NONE_RULER_MODE:
+            if self.mode in (EDIT_START_RULER_MODE, EDIT_END_RULER_MODE):
+                self.update_editting()
+            else:  # self.mode == MOVE_RULER_MODE:
+                self.update_moving()
+            self.cnvs.Refresh()
+            self._view_to_phys()
+
+    def update_selection(self):
+        self.v_end_pos = Vec(self.cnvs.clip_to_viewport(self.drag_v_end_pos))
+
+    def update_editting(self):
+        current_pos = Vec(self.cnvs.clip_to_viewport(self.drag_v_end_pos))
+
+        if self.edit_hover == gui.HOVER_START:
+            self.v_start_pos = current_pos
+        elif self.edit_hover == gui.HOVER_END:
+            self.v_end_pos = current_pos
+
+    def update_moving(self):
+        current_pos = Vec(self.cnvs.clip_to_viewport(self.drag_v_end_pos))
+
+        diff = current_pos - self.drag_v_start_pos
+        self.v_start_pos = self.v_start_pos + diff
+        self.v_end_pos = self.v_end_pos + diff
+        self.drag_v_start_pos = current_pos
+
+    def stop_updating_ruler(self):
+        """End the creation of the current selection"""
+        self.calc_ruler_edges()
+        self.mode = NONE_RULER_MODE
+        self.edit_hover = None
+
+    def update_ruler_projection(self, b_start_pos, b_end_pos, shiftscale):
+        """ Update the view positions of the ruler if the cnvs view has shifted or scaled
+        compared to the last time this method was called
+
+        """
+
+        if self.last_shiftscale != shiftscale:
+            logging.debug("Updating view position of selection %s", shiftscale)
+            self.last_shiftscale = shiftscale
+            self.v_start_pos = Vec(self.cnvs.buffer_to_view(b_start_pos))
+            self.v_end_pos = Vec(self.cnvs.buffer_to_view(b_end_pos))
+            self.calc_ruler_edges()
+
+    def calc_ruler_edges(self):
+        """ Calculate the inner and outer edges of the created ruler according to the hover margin"""
+
+        self.ruler_edges = {}
+
+        if self.v_start_pos and self.v_end_pos:
+            sx, sy = self.v_start_pos
+            ex, ey = self.v_end_pos
+
+            i_l, i_r = sorted([sx, ex])
+            i_t, i_b = sorted([sy, ey])
+
+            width = i_r - i_l
+
+            # Never have an inner box smaller than 2 times the margin
+            if width < 2 * self.hover_margin:
+                grow = (2 * self.hover_margin - width) / 2
+                i_l -= grow
+                i_r += grow
+            else:
+                shrink = min(self.hover_margin, width - 2 * self.hover_margin)
+                i_l += shrink
+                i_r -= shrink
+            o_l = i_l - 2 * self.hover_margin
+            o_r = i_r + 2 * self.hover_margin
+
+            height = i_b - i_t
+
+            if height < 2 * self.hover_margin:
+                grow = (2 * self.hover_margin - height) / 2
+                i_t -= grow
+                i_b += grow
+            else:
+                shrink = min(self.hover_margin, height - 2 * self.hover_margin)
+                i_t += shrink
+                i_b -= shrink
+            o_t = i_t - 2 * self.hover_margin
+            o_b = i_b + 2 * self.hover_margin
+
+            self.ruler_edges.update({
+                "o_r": o_r,
+                "o_b": o_b,
+                "o_l": o_l,
+                "o_t": o_t,
+            })
+
+            self.ruler_edges.update({
+                "s_l": sx - self.hover_margin,
+                "s_r": sx + self.hover_margin,
+                "s_t": sy - self.hover_margin,
+                "s_b": sy + self.hover_margin,
+                "e_l": ex - self.hover_margin,
+                "e_r": ex + self.hover_margin,
+                "e_t": ey - self.hover_margin,
+                "e_b": ey + self.hover_margin,
+            })
+
+    def outer_rect(self, convert_to_buffer=False):
+        """ Return the outer rectangle of the selection (x, y, w, h) """
+        return self.edges_to_rect(self.ruler_edges['o_l'], self.ruler_edges['o_t'],
+                                   self.ruler_edges['o_r'], self.ruler_edges['o_b'],
+                                   convert_to_buffer)
+
+    def start_rect(self, convert_to_buffer=False):
+        """ Return the rectangle of the start position (x, y, w, h) """
+        return self.edges_to_rect(self.ruler_edges['s_l'], self.ruler_edges['s_t'],
+                                   self.ruler_edges['s_r'], self.ruler_edges['s_b'],
+                                   convert_to_buffer)
+
+    def end_rect(self, convert_to_buffer=False):
+        """ Return the rectangle of the end position (x, y, w, h) """
+        return self.edges_to_rect(self.ruler_edges['e_l'], self.ruler_edges['e_t'],
+                                   self.ruler_edges['e_r'], self.ruler_edges['e_b'],
+                                   convert_to_buffer)
+
+    def edges_to_rect(self, x1, y1, x2, y2, convert_to_buffer=False):
+        """ Return a rectangle of the form (x, y, w, h) """
+        if convert_to_buffer:
+            x1, y1 = self.cnvs.view_to_buffer((x1, y1))
+            x2, y2 = self.cnvs.view_to_buffer((x2, y2))
+            return self.points_to_rect(x1, y1, x2, y2)
+        else:
+            return self.points_to_rect(x1, y1, x2, y2)
+
+    @staticmethod
+    def points_to_rect(left, top, right, bottom):
+        """ Transform two (x, y) points into a (x, y, w, h) rectangle """
+        return left, top, right - left, bottom - top
+
+    def debug_ruler_edges(self, ctx, convert_to_buffer=False):
+
+        if self.ruler_edges:
+            outer_rect = self.outer_rect(convert_to_buffer)
+
+            ctx.set_line_width(0.5)
+            ctx.set_dash([])
+
+            ctx.set_source_rgba(0, 0, 1, 1)
+            ctx.rectangle(*outer_rect)
+            ctx.stroke()
+
+            start_rect = self.start_rect(convert_to_buffer)
+            end_rect = self.end_rect(convert_to_buffer)
+
+            ctx.set_source_rgba(0.3, 1, 0.3, 1)
+            ctx.rectangle(*start_rect)
+            ctx.stroke()
+
+            ctx.set_source_rgba(0.6, 1, 0.6, 1)
+            ctx.rectangle(*end_rect)
+            ctx.stroke()
+
+    def get_hover(self, vpos):
+        """ Check if the given position is on/near a selection edge or inside the selection
+
+        :return: (bool) Return the type of hover
+
+        """
+        if self.ruler_edges:
+
+            vx, vy = vpos
+
+            if (
+                    self.ruler_edges["s_l"] < vx < self.ruler_edges["s_r"] and
+                    self.ruler_edges["s_t"] < vy < self.ruler_edges["s_b"]
+            ):
+                return gui.HOVER_START
+            elif (
+                    self.ruler_edges["e_l"] < vx < self.ruler_edges["e_r"] and
+                    self.ruler_edges["e_t"] < vy < self.ruler_edges["e_b"]
+            ):
+                return gui.HOVER_END
+            elif (
+                    self.ruler_edges["o_l"] < vx < self.ruler_edges["o_r"] and
+                    self.ruler_edges["o_t"] < vy < self.ruler_edges["o_b"]
+            ):
+                dist = util.perpendicular_distance(self.v_start_pos,
+                                                   self.v_end_pos,
+                                                   vpos)
+                if dist < self.hover_margin:
+                    return gui.HOVER_LINE
+
+        return gui.HOVER_NONE
+
+    def draw(self, ctx, selected, shift=(0, 0), scale=1.0):
+        """
+        Draw a ruler and display the size in meters next to it.
+        """
+
+        # If no valid selection is made, do nothing
+        if None in (self.p_start_pos, self.p_end_pos) or self.p_start_pos == self.p_end_pos:
+            return
+
+        if None not in (self.p_start_pos, self.p_end_pos) and self.p_start_pos != self.p_end_pos:
+            offset = self.cnvs.get_half_buffer_size()
+            b_start = self.cnvs.phys_to_buffer(self.p_start_pos, offset)
+            b_end = self.cnvs.phys_to_buffer(self.p_end_pos, offset)
+            self.update_ruler_projection(b_start, b_end, shift + (scale,))
+
+            # unit vector for physical coordinates
+            dx, dy = (self.p_start_pos[0] - self.p_end_pos[0],
+                      self.p_start_pos[1] - self.p_end_pos[1])
+
+            # unit vector for buffer (pixel) coordinates
+            dpx, dpy = (b_start[0] - b_end[0],
+                        b_start[1] - b_end[1])
+
+            # Calculate the phi angle in radians
+            phi = math.atan2(dx, dy) % (2 * math.pi)
+
+            # Calculate the angle of the ruler label
+            self.ruler_label.deg = math.degrees(phi + (math.pi / 2))
+
+            # Find the ruler length by calculating the Euclidean distance
+            # ruler length in physical coordinates
+            length = math.hypot(dx, dy)
+            # ruler lenght in pixels
+            pixel_length = math.hypot(dpx, dpy) or 0.000001
+
+            # Draws a black background for the ruler
+            ctx.set_line_width(2)
+            ctx.set_source_rgba(0, 0, 0, 0.5)
+            ctx.move_to(*b_start)
+            ctx.line_to(*b_end)
+
+            # Ruler of 1 pixel width
+            # Highlight the selected ruler and make it slightly thicker
+            if selected:
+                ctx.set_source_rgba(*self.highlight)
+                ctx.set_line_width(1.5)
+            else:
+                ctx.set_source_rgba(*self.colour)
+                ctx.set_line_width(1)
+            ctx.set_line_join(cairo.LINE_JOIN_MITER)
+
+            # Distance display with 3 digits
+            distance = units.readable_str(length, 'm', sig=3)
+            size_lbl = u"{}".format(distance)
+            self.ruler_label.text = size_lbl
+
+            # Display the ruler length in the middle of the ruler and determine
+            # whether to flip the label or not, depending on the angle.
+            if 0 < phi < math.pi:
+                l_pos = [(b_start[0] + b_end[0]) / 2 - 20 * math.sin(phi), (b_start[1] + b_end[1]) / 2 + 20 * math.cos(phi)]
+                self.ruler_label.flip = True
+            else:
+                l_pos = [(b_start[0] + b_end[0]) / 2 + 20 * math.sin(phi), (b_start[1] + b_end[1]) / 2 - 20 * math.cos(phi)]
+                self.ruler_label.flip = False
+            pos = Vec(l_pos[0], l_pos[1])
+            self.ruler_label.pos = pos
+
+            self.ruler_label.font_size = 12
+
+            # Decrease the font size of the label if the ruler is smaller than 20 pixels.
+            if (1 < pixel_length < 20):
+                self.ruler_label.font_size = 9
+
+            # If the ruler is smaller than 1 pixel, make it seem as 1 point (1 pixel) and decrease the font size to 5pt.
+            if (pixel_length <= 1):
+                ctx.move_to(*b_start)
+                ctx.line_to(b_start[0] + 1, b_start[1] + 1)
+                ctx.stroke()
+                self.ruler_label.font_size = 5
+                self.calc_ruler_edges()
+                self.ruler_edges.update({
+                    "s_l": 0,
+                    "s_r": 0,
+                    "s_t": 0,
+                    "s_b": 0,
+                    "e_l": 0,
+                    "e_r": 0,
+                    "e_t": 0,
+                    "e_b": 0,
+                })
+            else:
+                ctx.move_to(*b_start)
+                ctx.line_to(*b_end)
+                ctx.stroke()
+
+            # Label and ruler have the same colour, highlighted or not
+            if selected:
+                self.ruler_label.colour = self.highlight
+            else:
+                self.ruler_label.colour = self.colour
+
+            Label.draw(self.ruler_label, ctx)
+            # self.debug_ruler_edges(ctx, True)
+
+
+MODE_CREATE_RULER = 1
+MODE_SHOW_RULER = 2
+
+class RulerSelectOverlay(WorldOverlay, Ruler, DragMixin):
+    """
+       Selection overlay that allows for the selection of a ruler in physical coordinates
+       and displays the size of the ruler in meters. It can handle multiple rulers.
+    """
+
+    def __init__(self, cnvs, tool_va=None, ruler_label=None, drag_v_start_pos=None, drag_v_end_pos=None):
+        WorldOverlay.__init__(self, cnvs)
+        Ruler.__init__(self, cnvs, ruler_label, drag_v_start_pos, drag_v_end_pos)
+        DragMixin.__init__(self)
+
+        self.ruler_mode = None
+        self.mode = None
+
+        self._selected_tool_va = tool_va
+        if self._selected_tool_va:
+            self._selected_tool_va.subscribe(self._on_tool, init=True)
+
+        self._selected_ruler = None
+        self._rulers = []  # Rulers and all
+
+    def _on_tool(self, selected_tool):
+        """ Update the overlay when it's active and ruler changes"""
+        if selected_tool == TOOL_RULER:
+            self.ruler_mode = MODE_CREATE_RULER
+        else:
+            self.ruler_mode = MODE_SHOW_RULER
+
+    def on_left_down(self, evt):
+        """ Start drawing a ruler if the create mode is active """
+        if not self.active:
+            return super(RulerSelectOverlay, self).on_left_down(evt)
+
+        if self.right_dragging:
+            evt.Skip()
+            return
+
+        vpos = evt.Position
+        self.drag_v_start_pos = self.drag_v_end_pos = Vec(vpos)
+        drag = gui.HOVER_NONE
+        ruler_label = self.add_label("", colour=(0.8, 0.8, 0.8), align=wx.TEXT_ALIGNMENT_CENTER)
+        if self.ruler_mode == MODE_CREATE_RULER:
+
+            self._selected_ruler = Ruler(self.cnvs, ruler_label, self.drag_v_start_pos, self.drag_v_end_pos)
+            self._rulers.insert(0, self._selected_ruler)
+
+            self._selected_ruler.v_start_pos = self.drag_v_start_pos
+            drag = gui.HOVER_END
+        else:  # ruler_mode == MODE_SHOW_RULER
+            self._selected_ruler, drag = self._get_ruler_below(vpos)
+
+        if drag != gui.HOVER_NONE:
+            self._left_dragging = True
+            self.cnvs.set_dynamic_cursor(wx.CURSOR_PENCIL)
+
+            self._selected_ruler.start_dragging(drag, self.drag_v_start_pos)
+            self.cnvs.update_drawing()
+        else:
+            # Nothing to do with rulers
+            evt.Skip()
+
+    def _get_ruler_below(self, vpos):
+        """
+        It checks if a selected ruler was found while hovering.
+        """
+        if self._rulers:
+            for ruler in self._rulers:
+                hover_mode = ruler.get_hover(vpos)
+                if hover_mode != gui.HOVER_NONE:
+                    logging.debug("Hover (%s) found on ruler %s", hover_mode, ruler)
+                    return ruler, hover_mode
+
+        return None, gui.HOVER_NONE
+
+    def on_motion(self, evt):
+        """ Process drag motion if enabled, otherwise call super method so event will propagate """
+        if not self.active:
+            return super(RulerSelectOverlay, self).on_motion(evt)
+
+        vpos = evt.Position
+        if self._left_dragging:
+            # => Pass the new position to the current ruler
+            if not self._selected_ruler:
+                logging.error("Dragging without selected ruler")
+                evt.Skip()
+                return
+
+            self._selected_ruler.on_motion(Vec(vpos))
+            self.cnvs.request_drawing_update()
+        else:
+            # Hover-only => only update the cursor based on what could happen
+            # TODO: what happens if dragging another overlay/canvas?
+            self._selected_ruler, drag = self._get_ruler_below(vpos)
+            if drag != gui.HOVER_NONE:
+                self.cnvs.set_dynamic_cursor(wx.CURSOR_PENCIL)
+            else:
+                self.cnvs.reset_dynamic_cursor()
+
+            evt.Skip()
+
+    def on_char(self, evt):
+        """ Delete the ruler if it's selected"""
+
+        if not self.active:
+            return super(RulerSelectOverlay, self).on_char(evt)
+
+        if evt.GetKeyCode() == wx.WXK_DELETE:
+            if not self._selected_ruler:
+                logging.error("No selected ruler found")
+                evt.Skip()
+                return
+
+            self._rulers.remove(self._selected_ruler)
+            self._selected_ruler = None
+            self.cnvs.request_drawing_update()
+        else:
+            evt.Skip()
+
+    def on_left_up(self, evt):
+        """ Stop drawing a selection ruler if the overlay is active """
+
+        if not self.active:
+            return super(RulerSelectOverlay, self).on_left_up(evt)
+
+        if self._left_dragging:
+            if self._selected_ruler:
+                logging.debug("Done handling ruler %s", self._selected_ruler)
+                self._selected_ruler.stop_updating_ruler()
+                self.cnvs.update_drawing()
+
+            if self.ruler_mode == MODE_CREATE_RULER:
+                # Revert to the standard (NONE) tool
+                self.ruler_mode = MODE_SHOW_RULER
+                self._selected_tool_va.value = TOOL_NONE
+                self.active = True
+
+            self._left_dragging = False
+        else:
+            evt.Skip()
+
+    def draw(self, ctx, shift=(0, 0), scale=1.0):
+
+        for ruler in self._rulers[::-1]:
+            ruler.draw(ctx, ruler is self._selected_ruler, shift=shift, scale=scale)
+
 
 class LineSelectOverlay(WorldSelectOverlay):
     """ Selection overlay that allows for the selection of a line in physical coordinates"""
@@ -958,7 +1487,6 @@ class LineSelectOverlay(WorldSelectOverlay):
             self.cnvs.request_drawing_update()
         else:
             WorldSelectOverlay.on_motion(self, evt)
-
 
 class SpectrumLineSelectOverlay(LineSelectOverlay, PixelDataMixin):
     """
