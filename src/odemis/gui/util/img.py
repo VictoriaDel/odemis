@@ -2187,6 +2187,7 @@ def images_to_export_data(streams, view_hfw, view_pos,
     return (list of DataArray)
     raise LookupError: if no data visible in the selected FoV
     """
+
     images, im_min_type = convert_streams_to_images(streams, raw)
     if not images:
         raise LookupError("There is no stream data to be exported")
