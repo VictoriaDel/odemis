@@ -1139,6 +1139,7 @@ class Ruler(object):
             # Find the ruler length by calculating the Euclidean distance
             # ruler length in physical coordinates
             length = math.hypot(dx, dy)
+            
             # ruler length in pixels
             pixel_length = math.hypot(dpx, dpy) or 0.000001
 
