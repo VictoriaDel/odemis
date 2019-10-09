@@ -889,7 +889,6 @@ class Ruler(object):
         Args:
             drag: hover mode (HOVER_START, HOVER_LINE, HOVER_END)
             vpos: the view coordinates of the mouse cursor once left click mouse event is fired
-
         """
 
         self.drag_v_start_pos = self.drag_v_end_pos = vpos
@@ -1472,7 +1471,6 @@ class LineSelectOverlay(WorldSelectOverlay):
             self.cnvs.request_drawing_update()
         else:
             WorldSelectOverlay.on_motion(self, evt)
-
 
 class SpectrumLineSelectOverlay(LineSelectOverlay, PixelDataMixin):
     """
