@@ -33,8 +33,9 @@ from builtins import range
 # warnings.filterwarnings('error')
 # numpy.seterr(all='raise')
 
+# TODO: what are the estimation of peak width based on space domain
 # rough estimation of peak width based on fitting type
-PEAK_WIDTHS = {'gaussian': 0.1, 'lorentzian': 1e-4}
+PEAK_WIDTHS = {'gaussian': 1e-4, 'lorentzian': 1e-4}
 
 # These two fitting functions are called back from curve_fit()
 # Note: when returning NaN, curve_fit() appears to not like the proposed parameters
@@ -42,13 +43,13 @@ PEAK_WIDTHS = {'gaussian': 0.1, 'lorentzian': 1e-4}
 def GaussianFit(data, *peaks):
     """
     Applies gaussian fitting to data given the "peaks" parameters.
+    data (1d array of floats): the wavelength list for each N pixel
     peaks (list of floats): series of pos, width, amplitude and initial offset
     """
     gau = peaks[-1]  # Automatically converted to a vector in the addition
     for pos, width, amplitude in _Grouped(peaks[:-1], 3):
         sprime = pos * abs(width)
         gau += abs(amplitude) * _Normalize(numpy.exp(-(data - pos) ** 2 / sprime ** 2))
-
     return gau
 
 
@@ -173,6 +174,10 @@ def Detect(y_vector, x_vector=None, lookahead=5, delta=0):
     return maxtab, mintab
 
 
+h_planck = 6.6260715e-34  # J/s
+c_light = 299792458  # m/s
+e_charge = 1.602e-19  # J --> eV
+
 class PeakFitter(object):
     def __init__(self):
         # will take care of executing peak fitting asynchronously
@@ -236,6 +241,9 @@ class PeakFitter(object):
             window_size = init_window_size
             logging.debug("Starting peak detection on data (len = %d) with window = %d",
                           len(wavelength), window_size)
+            # TODO: Check if wavelength is in meters, or pixels. Apply Jacobian transformation only in case of meters.
+            energy = applyJacobian_x(wavelength)
+            spectra_energy = applyJacobian_y(wavelength, spectrum)
             try:
                 width = PEAK_WIDTHS[type]
                 FitFunction = PEAK_FUNCTIONS[type]
@@ -253,12 +261,17 @@ class PeakFitter(object):
                     logging.debug("Retrying to fit peak with window = %d", window_size)
                     continue
 
+                constant = h_planck * c_light
                 fit_list = []
                 for (pos, amplitude) in peaks:
-                    fit_list.append(pos)
-                    fit_list.append(width)
-                    fit_list.append(amplitude)
-                # Initialize offset to 0
+                    pos_e = constant/pos
+                    width_e = constant/width
+                    amplitude_e = (amplitude * pos**2) / constant
+                    fit_list.append(pos_e)
+                    fit_list.append(width_e)
+                    fit_list.append(amplitude_e)
+                logging.debug("-----------print fit_list in eV--------------%s", fit_list)
+                # # Initialize offset to 0
                 fit_list.append(0)
 
                 if future._fit_state == CANCELLED:
@@ -271,7 +284,9 @@ class PeakFitter(object):
                         # TODO, from scipy 0.17, curve_fit() supports the 'bounds' parameter.
                         # It could be used to ensure the peaks params are positives.
                         # (Once we don't support Ubuntu 12.04)
-                        params, _ = curve_fit(FitFunction, wavelength, spectrum, p0=fit_list)
+                        # params, _ = curve_fit(FitFunction, wavelength, spectrum, p0=fit_list)
+                        params, _ = curve_fit(FitFunction, energy, spectra_energy, p0=fit_list)
+                        logging.debug("-------params after fitting in eV--------%s", params)
                     break
                 except Exception:
                     window_size = int(round(window_size * 1.2))
@@ -280,12 +295,23 @@ class PeakFitter(object):
             else:
                 raise ValueError("Could not apply peak fitting of type %s." % type)
             # reformat parameters to (list of 3 tuples, offset)
+            # peaks_params = []
+            # for pos, width, amplitude in _Grouped(params[:-1], 3):
+            #     # Note: to avoid negative peaks, the fit functions only take the
+            #     # absolute of the amplitude/width. So now amplitude and width
+            #     # have 50% chances to be negative => Force positive now.
+            #     peaks_params.append((pos, abs(width), abs(amplitude)))
+
             peaks_params = []
-            for pos, width, amplitude in _Grouped(params[:-1], 3):
+            for pos_e, width_e, amplitude_e in _Grouped(params[:-1], 3):
+                pos = constant/pos_e
+                width = constant/width_e
+                amplitude = amplitude_e * constant / pos**2
                 # Note: to avoid negative peaks, the fit functions only take the
                 # absolute of the amplitude/width. So now amplitude and width
                 # have 50% chances to be negative => Force positive now.
                 peaks_params.append((pos, abs(width), abs(amplitude)))
+
             params = peaks_params, params[-1]
             return params
         except CancelledError:
@@ -317,6 +343,17 @@ class PeakFitter(object):
         # really rough estimation
         return len(data) * 10e-3  # s
 
+def applyJacobian_x(wavelength):
+    constant = h_planck * c_light
+    energy = numpy.divide(constant, wavelength)
+    return energy
+
+def applyJacobian_y(wavelength, spectrum):
+    constant = h_planck * c_light
+    wavelength_2 = numpy.power(wavelength, 2)
+    spectra_space = numpy.multiply(spectrum, wavelength_2)
+    spectra_energy = numpy.divide(spectra_space, constant)
+    return spectra_energy
 
 def Curve(wavelength, peak_parameters, offset, type='gaussian'):
     """
@@ -339,10 +376,36 @@ def Curve(wavelength, peak_parameters, offset, type='gaussian'):
     except KeyError:
         raise KeyError("Given type %s not in available fitting types: %s" % (type, list(PEAK_FUNCTIONS.keys())))
 
+    logging.debug("-----------------INSIDE CURVE FUNCTION----------------------------")
+    logging.debug("--------peak_parameters----%s", peak_parameters)
+
     # Flatten the peak parameters tuples
     peak_flat = [p for l in peak_parameters for p in l]
     peak_flat.append(offset)
-    curve = FitFunction(wavelength, *peak_flat)
+    logging.debug("-------------PEAK FLAT--------------%s", peak_flat)
+
+    constant = h_planck * c_light
+    peaks_params = []
+    for (pos, width, amplitude) in _Grouped(peak_flat[:-1], 3):
+        pos_e = constant / pos
+        width_e = constant / width
+        amplitude_e = amplitude * (pos ** 2) / constant
+        peaks_params.append((pos_e, abs(width_e), abs(amplitude_e)))
+        peak_pos = pos
+
+    peak_flat_e = [p for l in peaks_params for p in l]
+    peak_flat_e.append(offset)
+
+    logging.debug("-------- peak parameters after the conversion to energy----- %s", peaks_params)
+    logging.debug("-------- peak flat after the conversion to energy----- %s", peak_flat_e)
+    energy = numpy.divide(constant, wavelength)
+
+    # curve = FitFunction(wavelength, *peak_flat)
+    curve_e = FitFunction(energy, *peak_flat_e)
+    wavelength_2 = numpy.power(wavelength, 2)
+    curve_c = numpy.multiply(curve_e, constant)
+    curve = numpy.divide(curve_c, wavelength_2)
+    logging.debug("------------CURVE---------%s", curve)
 #         residual = numpy.sqrt((abs(output - spectrum) ** 2).sum() / len(spectrum))
 #         logging.info("Residual error of spectrum fitting is %f", residual)
     return curve
