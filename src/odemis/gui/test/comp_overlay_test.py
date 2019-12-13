@@ -23,6 +23,7 @@
 """
 from __future__ import division, print_function
 
+from builtins import range
 import logging
 import math
 import numpy
@@ -32,17 +33,21 @@ from odemis.driver import simsem
 from odemis.gui.comp.overlay import view as vol
 from odemis.gui.comp.overlay import world as wol
 from odemis.gui.model import TOOL_POINT, TOOL_LINE, TOOL_RULER
+<<<<<<< HEAD
+=======
+from odemis.gui.util.img import wxImage2NDImage
+from odemis.util.comp import compute_scanner_fov, get_fov_rect
+>>>>>>> master
 from odemis.util.conversion import hex_to_frgb
+from odemis.util.test import assert_array_not_equal
 import unittest
 import wx
-from builtins import range
 
 import odemis.gui as gui
 import odemis.gui.comp.canvas as canvas
 import odemis.gui.comp.miccanvas as miccanvas
 import odemis.gui.model as guimodel
 import odemis.gui.test as test
-from odemis.util.comp import compute_scanner_fov, get_fov_rect
 
 test.goto_manual()
 logging.getLogger().setLevel(logging.DEBUG)
@@ -725,6 +730,79 @@ class OverlayTestCase(test.GuiTestCase):
                 pass
 
         cnvs.Bind(wx.EVT_KEY_UP, on_key)
+
+    def test_ruler_overlay(self):
+        logging.getLogger().setLevel(logging.DEBUG)
+        cnvs = miccanvas.DblMicroscopeCanvas(self.panel)
+
+        tab_mod = self.create_simple_tab_model()
+        tab_mod.tool.choices |= {TOOL_RULER}
+        view = tab_mod.focussedView.value
+        self.add_control(cnvs, wx.EXPAND, proportion=1, clear=True)
+        cnvs.setView(view, tab_mod)
+        rol = cnvs.ruler_overlay
+
+        test.gui_loop(0.1)
+
+        # ruler overlay with no rulers
+        img = wx.Bitmap.ConvertToImage(cnvs._bmp_buffer)
+        buffer_empty = wxImage2NDImage(img)
+        self.assertTrue(numpy.all(buffer_empty == 0))
+
+        # Create a "big ruler"
+        p_start_pos = (-0.00055, -0.00055)
+        p_end_pos = (0.00055, 0.00055)
+        ruler = wol.Ruler(cnvs, p_start_pos, p_end_pos)
+        rol._rulers.append(ruler)
+
+        # Create a 10 px ruler
+        v_start_pos = (400, 400)
+        v_end_pos = (400, 410)
+        offset = cnvs.get_half_buffer_size()
+        p_start_pos = cnvs.view_to_phys(v_start_pos, offset)
+        p_end_pos = cnvs.view_to_phys(v_end_pos, offset)
+        ruler = wol.Ruler(cnvs, p_start_pos, p_end_pos)
+        rol._rulers.append(ruler)
+
+        # Create a 1 px ruler
+        b_start_pos = (599, 670)
+        b_end_pos = (599, 671)
+        offset = cnvs.get_half_buffer_size()
+        p_start_pos = cnvs.buffer_to_phys(b_start_pos, offset)
+        p_end_pos = cnvs.buffer_to_phys(b_end_pos, offset)
+        ruler = wol.Ruler(cnvs, p_start_pos, p_end_pos)
+        rol._rulers.append(ruler)
+
+        # Add one ruler that will become the selected ruler
+        p_start_pos = (0, 0)
+        p_end_pos = (0, 0.00035)
+        selected_ruler = wol.Ruler(cnvs, p_start_pos, p_end_pos)
+        rol._rulers.append(selected_ruler)
+
+        # update drawing
+        cnvs.update_drawing()
+        test.gui_loop(0.1)
+
+        # ruler overlay with 4 rulers
+        cnvs._dc_buffer.SelectObject(wx.NullBitmap)  # Flush the buffer
+        cnvs._dc_buffer.SelectObject(cnvs._bmp_buffer)
+        img = wx.Bitmap.ConvertToImage(cnvs._bmp_buffer)
+        new_buffer = wxImage2NDImage(img)
+        assert_array_not_equal(buffer_empty, new_buffer,
+                        msg="Buffers are equal, which means that the rulers were not drawn")
+
+        # make the last ruler the selected one (highlighted)
+        rol._selected_ruler = selected_ruler
+        cnvs.update_drawing()
+        test.gui_loop(0.1)
+
+        # ruler overlay with 4 rulers, 1 of them is selected (highlighted)
+        cnvs._dc_buffer.SelectObject(wx.NullBitmap)  # Flush the buffer
+        cnvs._dc_buffer.SelectObject(cnvs._bmp_buffer)
+        img = wx.ImageFromBitmap(cnvs._bmp_buffer)
+        sel_buffer = wxImage2NDImage(img)
+        assert_array_not_equal(new_buffer, sel_buffer,
+                        msg="Buffers are equal, which means that the rulers were not drawn")
 
     def test_line_select_overlay(self):
         logging.getLogger().setLevel(logging.DEBUG)

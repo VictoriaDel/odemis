@@ -183,7 +183,7 @@ class DblMicroscopeCanvas(canvas.DraggableCanvas):
         # gets the correct center
         phys_pos = self.view.view_pos.value
         self._calc_bg_offset(phys_pos)
-        self.requested_phys_pos = phys_pos
+        self.requested_phys_pos = tuple(phys_pos)
 
         # any image changes
         self.view.lastUpdate.subscribe(self._on_view_image_update, init=True)
@@ -201,7 +201,11 @@ class DblMicroscopeCanvas(canvas.DraggableCanvas):
             tools_possible &= self.allowed_modes
 
         if guimodel.TOOL_RULER in tools_possible:
+<<<<<<< HEAD
             self.ruler_overlay = world_overlay.RulerSelectOverlay(self, tab_data.tool)
+=======
+            self.ruler_overlay = world_overlay.RulerOverlay(self, tab_data.tool)
+>>>>>>> master
             # Ruler selection overlay: always shown & active
             self.add_world_overlay(self.ruler_overlay)
             self.ruler_overlay.activate()

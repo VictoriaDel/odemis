@@ -522,7 +522,7 @@ class LiveViewGUIData(MicroscopyGUIData):
         MicroscopyGUIData.__init__(self, main)
 
         # Current tool selected (from the toolbar)
-        tools = {TOOL_NONE,} # TOOL_ZOOM, TOOL_ROI}
+        tools = {TOOL_NONE, TOOL_RULER}  # TOOL_ZOOM, TOOL_ROI}
         if main.time_correlator: # FLIM
             tools.add(TOOL_ROA)
 
@@ -655,7 +655,10 @@ class AnalysisGUIData(MicroscopyGUIData):
         MicroscopyGUIData.__init__(self, main)
         self._conf = get_general_conf()
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> master
         # only tool to zoom and pick point/line/ruler
         self.tool.choices = {TOOL_NONE, TOOL_POINT, TOOL_LINE, TOOL_RULER}  # TOOL_ZOOM
 

@@ -80,7 +80,7 @@ from odemis.gui.model import TOOL_ZOOM, TOOL_ROI, TOOL_ROA, TOOL_RO_ANCHOR, \
 from odemis.gui.util import call_in_wx_main, wxlimit_invocation
 from odemis.gui.util.widgets import ProgressiveFutureConnector, AxisConnector, \
     ScannerFoVAdapter
-from odemis.util import units, spot, limit_invocation
+from odemis.util import units, spot, limit_invocation, fsdecode
 from odemis.util.dataio import data_to_static_streams, open_acquisition
 
 # The constant order of the toolbar buttons
@@ -1767,7 +1767,7 @@ class AnalysisTab(Tab):
             return False
 
         # Detect the format to use
-        filename = dialog.GetPath()
+        filename = fsdecode(dialog.GetPath())
         if extend:
             logging.debug("Extending the streams with file %s", filename)
         else:
@@ -1830,6 +1830,10 @@ class AnalysisTab(Tab):
             # Remove all the previous streams
             self._stream_bar_controller.clear()
             # Clear any old plots
+            self.panel.vp_inspection_tl.clear()
+            self.panel.vp_inspection_tr.clear()
+            self.panel.vp_inspection_bl.clear()
+            self.panel.vp_inspection_br.clear()
             self.panel.vp_inspection_plot.clear()
             self.panel.vp_linespec.clear()
             self.panel.vp_temporalspec.clear()
@@ -1903,8 +1907,8 @@ class AnalysisTab(Tab):
             # number of rows (is vertical size), comes first. So we
             # need to 'swap' the values to get the (x,y) resolution.
             height, width = sraw.shape[-2], sraw.shape[-1]
-            pixel_width = sraw.metadata[model.MD_PIXEL_SIZE][0]
-            center_position = sraw.metadata[model.MD_POS]
+            pixel_width = sraw.metadata.get(model.MD_PIXEL_SIZE, (100e-9, 100e-9))[0]
+            center_position = sraw.metadata.get(model.MD_POS, (0, 0))
 
             # Set the PointOverlay values for each viewport
             for viewport in self.view_controller.viewports:
@@ -2410,6 +2414,7 @@ class SecomAlignTab(Tab):
         tb = panel.lens_align_tb
         tb.add_tool(TOOL_DICHO, self.tab_data_model.tool)
         tb.add_tool(TOOL_SPOT, self.tab_data_model.tool)
+        tb.add_tool(TOOL_RULER, self.tab_data_model.tool)
 
         # Dichotomy mode: during this mode, the label & button "move to center" are
         # shown. If the sequence is empty, or a move is going, it's disabled.
@@ -3475,6 +3480,16 @@ class Sparc2AlignTab(Tab):
                                        )
                 speccnt_spe = self._stream_controller.addStream(speccnts,
                                     add_to_view=self.panel.vp_align_fiber.view)
+                # Special for the time-correlator: some of its settings also affect
+                # the photo-detectors.
+                if main_data.time_correlator:
+                    if model.hasVA(main_data.time_correlator, "syncDiv"):
+                        speccnt_spe.add_setting_entry("syncDiv",
+                                                      main_data.time_correlator.syncDiv,
+                                                      main_data.time_correlator,
+                                                      main_data.hw_settings_config["time-correlator"].get("syncDiv")
+                                                      )
+
                 if main_data.tc_od_filter:
                     speccnt_spe.add_axis_entry("density", main_data.tc_od_filter)
                     speccnt_spe.add_axis_entry("band", main_data.tc_filter)
@@ -4299,6 +4314,8 @@ class TabBarController(object):
         self._enabled_tabs = set()  # tabs which were enabled before starting acquisition
         self.main_data.is_acquiring.subscribe(self.on_acquisition)
 
+        self._tabs_fixed_big_text = set()  # {str}: set of tab names which have been fixed
+
     def get_tabs(self):
         return self._tabs.choices
 
@@ -4374,6 +4391,18 @@ class TabBarController(object):
         tab.Show()
         self.main_frame.Layout()
 
+        # There is a bug in wxPython/GTK3 (up to 4.0.7, at least), which causes
+        # the StaticText's not shown at init to be initialized with a size as if
+        # the font was standard size. So if the font is big, the text is cropped.
+        # See: https://github.com/wxWidgets/Phoenix/issues/1452
+        # https://trac.wxwidgets.org/ticket/16088
+        # => Force resize, on the first time the tab is shown
+        if tab.name not in self._tabs_fixed_big_text:
+            self._fix_big_static_text(tab.panel)
+            # Eventually, update the size of the parent, based on everything inside it
+            wx.CallLater(100, tab.panel.Layout)
+            self._tabs_fixed_big_text.add(tab.name)
+
     def terminate(self):
         """ Terminate each tab (i.e., indicate they are not used anymore) """
 
@@ -4401,3 +4430,11 @@ class TabBarController(object):
 
         evt.Skip()
 
+    def _fix_big_static_text(self, root):
+        # Force re-calculate the size of all StaticTexts contained in the object
+        for c in root.GetChildren():
+            if isinstance(c, wx.StaticText):
+                logging.debug("Fixing size of the text %s", c.Label)
+                c.InvalidateBestSize()
+            elif isinstance(c, wx.Window):
+                self._fix_big_static_text(c)

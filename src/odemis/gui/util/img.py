@@ -42,6 +42,7 @@ from odemis.util import spectrum
 import odemis.gui.img as guiimg
 from odemis.acq.stream import RGBProjection, \
     SinglePointTemporalProjection, DataProjection
+from odemis.model import DataArrayShadow
 
 BAR_PLOT_COLOUR = (0.5, 0.5, 0.5)
 CROP_RES_LIMIT = 1024
@@ -118,19 +119,20 @@ def min_type(data):
     """
 
     if numpy.issubdtype(data.dtype, numpy.integer):
-        types = [numpy.int8, numpy.uint8, numpy.int16, numpy.uint16, numpy.int32,
-                 numpy.uint32, numpy.int64, numpy.uint64]
-    else:
-        types = [numpy.float16, numpy.float32, numpy.float64]
+        types = (numpy.uint8, numpy.int8, numpy.uint16, numpy.int16, numpy.uint32,
+                 numpy.int32, numpy.uint64, numpy.int64)
 
-    data_min, data_max = data.min(), data.max()
-
-    for t in types:
-        # FIXME: doesn't work with floats
-        if numpy.all(data_min >= numpy.iinfo(t).min) and numpy.all(data_max <= numpy.iinfo(t).max):
-            return t
+        data_min, data_max = data.min(), data.max()
+        for t in types:
+            if numpy.all(data_min >= numpy.iinfo(t).min) and numpy.all(data_max <= numpy.iinfo(t).max):
+                return t
+        else:
+            raise ValueError("Could not find suitable dtype.")
     else:
-        raise ValueError("Could not find suitable dtype.")
+        # TODO: for floats, be more clever, and if all the float could have a
+        # smaller precision, return that smaller floats (eg, the data contains
+        # only 0's)
+        return data.dtype
 
 
 def apply_rotation(ctx, rotation, b_im_rect):
@@ -1927,7 +1929,7 @@ def draw_legend_multi_streams(images, buffer_size, buffer_scale,
                                  legend_y_pos - small_font,
                                  tint_box_size, tint_box_size)
             legend_ctx.fill()
-            legend_ctx.set_source_rgb(*bg_color)
+            legend_ctx.set_source_rgb(*text_color)
 
         legend_x_pos += cell_x_step
         legend_y_pos_store = legend_y_pos
@@ -2011,20 +2013,21 @@ def get_ordered_images(streams, raw=False):
                 data = img.mergeTiles(data)
         else:
             if isinstance(s, RGBProjection):
-                data_raw = s.projectAsRaw()
-            elif isinstance(s.raw, tuple):  # 2D tuple = tiles
-                data_raw = img.mergeTiles(s.raw)
-            elif model.hasVA(s, "zIndex"):
-                data_raw = img.getYXFromZYX(s.raw[0], s.zIndex.value)
+                data = s.projectAsRaw()
+            elif not s.raw: # Nothing to export
+                logging.info("Skipping %s which has no raw data", s)
+                continue
             else:
-                data_raw = s.raw[0]
+                # For now we only export the first data (typically, there is only one)
+                data = s.raw[0]
+                if isinstance(data, DataArrayShadow):
+                    data = data.getData()
+                if model.hasVA(s, "zIndex"):
+                    data = img.getYXFromZYX(data, s.zIndex.value)
 
             # Pretend to be RGB for the drawing by cairo
-            if numpy.can_cast(im_min_type, min_type(data_raw)):
-                im_min_type = min_type(data_raw)
-
-            # Split the bits in R,G,B,A
-            data = _pack_data_into_rgba(data_raw)
+            if numpy.can_cast(im_min_type, min_type(data)):
+                im_min_type = min_type(data)
 
         if isinstance(s.raw, tuple):  # s.raw has tiles
             md = s.raw[0][0].metadata.copy()
@@ -2094,15 +2097,21 @@ def convert_streams_to_images(streams, raw=False):
 
     # add the images in order
     ims = []
-    for rgbim, blend_mode, stream, md in images:
-        rgba_im = format_rgba_darray(rgbim)
+    for data, blend_mode, stream, md in images:
+        try:
+            rgba_im = _convert_to_bgra(data)
+        except TypeError:
+            if not raw:
+                raise  # Something is very wrong, as we should have RGB data from the projection
+            logging.warning("Data of %s cannot be packed so will export very raw", stream.name.value)
+            rgba_im = data  # The caller will have to handle it in a special way
         keepalpha = False
-        date = rgbim.metadata.get(model.MD_ACQ_DATE, None)
-        scale = rgbim.metadata[model.MD_PIXEL_SIZE]
-        pos = rgbim.metadata[model.MD_POS]
-        rot = rgbim.metadata.get(model.MD_ROTATION, 0)
-        shear = rgbim.metadata.get(model.MD_SHEAR, 0)
-        flip = rgbim.metadata.get(model.MD_FLIP, 0)
+        date = data.metadata.get(model.MD_ACQ_DATE, None)
+        scale = data.metadata[model.MD_PIXEL_SIZE]
+        pos = data.metadata[model.MD_POS]
+        rot = data.metadata.get(model.MD_ROTATION, 0)
+        shear = data.metadata.get(model.MD_SHEAR, 0)
+        flip = data.metadata.get(model.MD_FLIP, 0)
 
         # TODO: directly put the metadata as set_images do?
         ims.append((rgba_im, pos, scale, keepalpha, rot, shear, flip, blend_mode,
@@ -2174,22 +2183,57 @@ def get_sub_img(b_intersect, b_im_rect, im_data, total_scale):
     return im_data, b_new
 
 
+class FakeCanvas(object):
+    """Fake canvas for drawing purposes. It is currently used to export images with printed rulers
+    in print-ready export. We ask the overlay to draw on this fake canvas"""
+
+    def __init__(self, ctx, buffer_size, buffer_center, buffer_scale):
+        """
+        ctx (cairo context): the view context on which to draw
+        buffer_size (0<int, 0<int) : buffer width and height in pixels
+        buffer_center (float, float) : center position X, Y in meters
+        buffer_scale (float, float) : buffer scale position in pixels/meter
+        """
+        self.ctx = ctx
+        self.buffer_size = buffer_size
+        self.buffer_center = buffer_center
+        self.buffer_scale = buffer_scale
+
+    def get_half_buffer_size(self):
+        """Return half the size of the current buffer"""
+        return tuple(v // 2 for v in self.buffer_size)
+
+    def phys_to_buffer(self, pos, offset=(0, 0)):
+        """Convert a position in physical coordinates into buffer coordinates"""
+        return ((pos[0] - self.buffer_center[0]) * self.buffer_scale[0] + offset[0],
+                -(pos[1] - self.buffer_center[1]) * self.buffer_scale[1] + offset[1])
+
+    def draw_overlay(self, overlay):
+        """Pass the fake canvas to the draw function of the overlay"""
+        overlay.draw(self.ctx, canvas=self)
+
+
 def images_to_export_data(streams, view_hfw, view_pos,
                           draw_merge_ratio, raw=False,
-                          interpolate_data=False, logo=None):
+                          orig_canvas=None, interpolate_data=False, logo=None):
     """
     streams (Streams or DataProjection): the data to be exported
     view_hfw (tuple of float): X (width), Y (height) in m
     view_pos (tuple of float): center position X, Y in m
     raw (bool): if False, generates one RGB image out of all the streams, otherwise
       generates one image per stream using the raw data
+    orig_canvas: if the passed canvas has a ruler overlay, a fake canvas is used
+      for the ruler overlay to draw on it.
     logo (RGBA DataArray): Image to display in the legend
     return (list of DataArray)
     raise LookupError: if no data visible in the selected FoV
     """
 
+<<<<<<< HEAD
     #TODO:It should support overlay
 
+=======
+>>>>>>> master
     images, im_min_type = convert_streams_to_images(streams, raw)
     if not images:
         raise LookupError("There is no stream data to be exported")
@@ -2264,15 +2308,22 @@ def images_to_export_data(streams, view_hfw, view_pos,
 
     # The list of images to export
     data_to_export = []
-
+    fake_canvas = None
     n = len(images)
     for i, im in enumerate(images):
+        if raw and not (im.ndim == 3 and im.shape[-1] == 4):
+            # Non BGRA data type => we'll pass it completely as-is
+            data_to_export.append(im)
+            continue
+
         if raw or i == 0:  # when print-ready, share the surface to draw
             # Make surface based on the maximum resolution
             data_to_draw = numpy.zeros((buffer_size[1], buffer_size[0], 4), dtype=numpy.uint8)
             surface = cairo.ImageSurface.create_for_data(
                 data_to_draw, cairo.FORMAT_ARGB32, buffer_size[0], buffer_size[1])
             ctx = cairo.Context(surface)
+            # The ruler overlay needs a canvas to draw itself, so use a fake canvas
+            fake_canvas = FakeCanvas(ctx, buffer_size, buffer_center, (1 / buffer_scale[0], 1 / buffer_scale[1]))
 
         if im.metadata['blend_mode'] == BLEND_SCREEN or raw:
             # No transparency in case of "raw" export
@@ -2302,7 +2353,7 @@ def images_to_export_data(streams, view_hfw, view_pos,
         )
 
         # Create legend for each raw image
-        if raw:  # csv
+        if raw:
             legend_rgb = draw_legend_multi_streams(images, buffer_size, buffer_scale,
                                                    view_hfw[0], im.metadata['date'],
                                                    im.metadata['stream'], img_file=logo)
@@ -2316,6 +2367,9 @@ def images_to_export_data(streams, view_hfw, view_pos,
 
     # Create legend for print-ready
     if not raw:  # png, tiff
+        # In print-ready export, a fake canvas is used by the ruler overlay
+        if orig_canvas and orig_canvas.ruler_overlay:
+            fake_canvas.draw_overlay(orig_canvas.ruler_overlay)
         dates = [im.metadata['date'] if im.metadata['date'] else 0 for im in images]
         date = max(dates)
         legend_rgb = draw_legend_multi_streams(images, buffer_size, buffer_scale,
@@ -2344,34 +2398,60 @@ def _adapt_rgb_to_raw(imrgb, data_raw):
     return im_as_raw
 
 
-def _pack_data_into_rgba(data_raw):
+def _convert_to_bgra(data):
     """
-    Convert a "raw" data (as in "greyscale") into data pretending to be RGBA 8-bit
+    Convert an image data to BGRA format, to make it compatible with Cairo.
+    data (ndarray of shape YX or YX3 or YX4): If the data is already BGRA, nothing happens.
+      If the data is a large int (eg int16), which can fit on 24 bits then it's
+      packed into the BGR bytes.
+    return (ndarray of shape YX4): BGRA data
+    raise TypeError: if the data cannot be converted (losslessly)
+    """
+    if data.ndim == 3 and data.shape[2] in (3, 4):
+        # RGB image => normal conversion
+        return format_rgba_darray(data)
+    elif (data.ndim == 2 and
+          numpy.issubdtype(data.dtype, numpy.integer) and data.dtype.itemsize <= 4):
+        # Split the bits in B,G,R,A
+        return _pack_data_into_bgra(data)
+
+    raise TypeError("Data of type %s and shape %s cannot be packed in BGRA", data.dtype, data.shape)
+
+
+def _pack_data_into_bgra(data_raw):
+    """
+    Convert a "raw" data (as in "greyscale") into data pretending to be BGRA 8-bit
     data_raw (ndarray Y,X)
     return (ndrarray Y,X,4)
     """
     data = numpy.empty((data_raw.shape[0], data_raw.shape[1], 4), dtype=numpy.uint8)
-    # TODO: why in this order?? due to RGBA -> BGRA after?
-    data[:, :, 0] = numpy.right_shift(data_raw[:, :], 8) & 255
-    data[:, :, 1] = data_raw[:, :] & 255
+    if numpy.any(numpy.right_shift(data_raw[:, :], 24) & 255):
+        raise TypeError("Data contains information that would be packed on the alpha byte")
+
+    # Note: the order doesn't really matter. We just need to use the same one
+    # when unpacking
+    data[:, :, 0] = data_raw[:, :] & 255
+    data[:, :, 1] = numpy.right_shift(data_raw[:, :], 8) & 255
     data[:, :, 2] = numpy.right_shift(data_raw[:, :], 16) & 255
-    data[:, :, 3] = numpy.right_shift(data_raw[:, :], 24) & 255
-    return model.DataArray(data, data_raw.metadata)
+    data[:, :, 3] = 255
+
+    data = model.DataArray(data, data_raw.metadata)
+    data.metadata['byteswapped'] = True
+    return data
 
 
 def _unpack_raw_data(imrgb, dtype):
     """
     Convert back the "raw" (as in "greyscale with lots of bits") data from data
-      pretending to be RGBA 8-bit
+      pretending to be BGRA 8-bit
 
     imrgb (ndarray Y,X,4)
     dtype: type of the output data (should be some uint <= 64 bits)
     return (ndrarray Y,X)
     """
-    imraw = (numpy.left_shift(imrgb[:, :, 2], 8, dtype=numpy.uint32)
-             | imrgb[:, :, 1]
-             | numpy.left_shift(imrgb[:, :, 0], 16, dtype=numpy.uint32)
-             | numpy.left_shift(imrgb[:, :, 3], 24, dtype=numpy.uint32))
+    imraw = (imrgb[:, :, 0]
+             | numpy.left_shift(imrgb[:, :, 1], 8, dtype=numpy.uint32)
+             | numpy.left_shift(imrgb[:, :, 2], 16, dtype=numpy.uint32))
     return imraw.astype(dtype)
 
 

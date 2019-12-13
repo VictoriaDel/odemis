@@ -65,6 +65,10 @@ class Label(object):
         self.text_size = None
 
         self._font_name = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT).GetFaceName()
+<<<<<<< HEAD
+=======
+        self._weight = cairo.FONT_WEIGHT_NORMAL
+>>>>>>> master
 
     @property
     def text(self):
@@ -73,6 +77,15 @@ class Label(object):
     @text.setter
     def text(self, val):
         self._text = u"%s" % val
+        self._clear_cache()
+
+    @property
+    def weight(self):
+        return self._weight
+
+    @weight.setter
+    def weight(self, val):
+        self._weight = val
         self._clear_cache()
 
     @property
@@ -127,7 +140,11 @@ class Label(object):
         ctx.save()
 
         # TODO: Look at ScaledFont for additional caching
+<<<<<<< HEAD
         ctx.select_font_face(self._font_name, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+=======
+        ctx.select_font_face(self._font_name, cairo.FONT_SLANT_NORMAL, self.weight)
+>>>>>>> master
 
         # For some reason, fonts look a little bit smaller when Cairo
         # plots them at an angle. We compensate for that by increasing the size
@@ -279,8 +296,6 @@ class Overlay(with_metaclass(ABCMeta, object)):
         self.labels = []
         self.canvas_padding = 10
 
-        self._font_name = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT).GetFaceName()
-
         if label:
             self.add_label(label)
 
@@ -351,6 +366,7 @@ class Overlay(with_metaclass(ABCMeta, object)):
         """ Render all the defined labels to the screen """
         for label in self.labels:
             label.draw(ctx)
+<<<<<<< HEAD
 
     def _write_label(self, ctx, l):
         # No text? Do nothing
@@ -464,6 +480,8 @@ class Overlay(with_metaclass(ABCMeta, object)):
             ctx.show_text(part)
 
         ctx.restore()
+=======
+>>>>>>> master
 
     @property
     def view_width(self):
@@ -1278,4 +1296,9 @@ class SpotModeBase(with_metaclass(ABCMeta, object)):
 
         ctx.set_source_rgb(r, g, b)
         ctx.arc(x, y, radius, 0, 2 * math.pi)
+<<<<<<< HEAD
         ctx.stroke()
+=======
+        ctx.stroke()
+
+>>>>>>> master

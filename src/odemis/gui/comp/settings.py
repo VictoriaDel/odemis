@@ -22,14 +22,13 @@ This file is part of Odemis.
 from __future__ import division
 
 from builtins import str
-import os
+from past.builtins import basestring
 import wx
 from decorator import decorator
 
 import odemis.gui as gui
 from odemis.gui.comp.combo import ComboBox
 from odemis.gui.comp.file import FileBrowser
-from odemis.gui.comp.foldpanelbar import FoldPanelItem
 from odemis.gui.comp.radio import GraphicalRadioButtonControl
 from odemis.gui.comp.slider import UnitIntegerSlider, UnitFloatSlider, Slider
 from odemis.gui.comp.text import UnitIntegerCtrl, UnitFloatCtrl
@@ -140,16 +139,23 @@ class SettingsPanel(wx.Panel):
 
         lbl_ctrl = self._add_side_label(label_text)
 
+        # Convert value object to str (unicode) iif necessary.
+        # unicode() (which is str() from Python3) fails in Python2 if argument
+        # is bytes with non-ascii characters.
+        # => If value is already bytes or unicode, just pass it as-is to wx.TextCtrl.
+        if not isinstance(value, basestring):
+            value = str(value)
+
         if value is not None:
             if selectable:
-                value_ctrl = wx.TextCtrl(self, value=str(value),
+                value_ctrl = wx.TextCtrl(self, value=value,
                                          style=wx.BORDER_NONE | wx.TE_READONLY)
                 value_ctrl.SetForegroundColour(gui.FG_COLOUR_DIS)
                 value_ctrl.SetBackgroundColour(gui.BG_COLOUR_MAIN)
                 self.gb_sizer.Add(value_ctrl, (self.num_rows, 1),
                                   flag=wx.ALL | wx.EXPAND | wx.ALIGN_CENTER_VERTICAL, border=5)
             else:
-                value_ctrl = wx.StaticText(self, label=str(value))
+                value_ctrl = wx.StaticText(self, label=value)
                 value_ctrl.SetForegroundColour(gui.FG_COLOUR_DIS)
                 self.gb_sizer.Add(value_ctrl, (self.num_rows, 1), flag=wx.ALL, border=5)
         else:

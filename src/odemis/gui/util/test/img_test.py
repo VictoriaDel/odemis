@@ -39,6 +39,10 @@ from odemis.dataio import tiff
 from odemis.acq.stream import SinglePointSpectrumProjection, \
     RGBSpatialProjection, LineSpectrumProjection, \
     SinglePointTemporalProjection, POL_POSITIONS, POL_POSITIONS_RESULTS
+import odemis.gui.test as test
+from odemis.gui.model import TOOL_RULER
+import odemis.gui.comp.miccanvas as miccanvas
+from odemis.gui.comp.overlay import world as wol
 
 logging.getLogger().setLevel(logging.DEBUG)
 
@@ -117,6 +121,11 @@ class TestARExport(unittest.TestCase):
     FILENAME_PNG = "test-ar.png"
     FILENAME_TIFF = "test-ar.tiff"
 
+    @classmethod
+    def setUpClass(cls):
+        cls.app = wx.App()  # needed for the gui font name
+        super(TestARExport, cls).setUpClass()
+
     def tearDown(self):
         # clean up
         try:
@@ -145,7 +154,6 @@ class TestARExport(unittest.TestCase):
         surface = cairo.ImageSurface.create_for_data(
             data_to_draw, cairo.FORMAT_ARGB32, ar_size[0], ar_size[1])
         ctx = cairo.Context(surface)
-        app = wx.App()  # needed for the gui font name
         font_name = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT).GetFaceName()
         ticksize = 10
         num_ticks = 6
@@ -620,7 +628,6 @@ class TestSpectrumExport(unittest.TestCase):
         self.spec_data = model.DataArray(data, md)
         self.spec_stream = stream.StaticSpectrumStream("test spec", self.spec_data)
         self.spec_stream.selected_pixel.value = (3, 1)
-        # self.app = wx.App()  # needed for the gui font name
 
     def test_spectrum_ready(self):
         self.spec_stream.selectionWidth.value = 1
@@ -800,10 +807,17 @@ class TestSpectrumLineExport(unittest.TestCase):
             pass
 
 
-class TestSpatialExport(unittest.TestCase):
+class TestSpatialExport(test.GuiTestCase):
+
+    frame_class = test.test_gui.xrccanvas_frame
+
+    @classmethod
+    def tearDownClass(cls):
+        # always close the window
+        cls.app.test_frame.Destroy()
+        super(TestSpatialExport, cls).tearDownClass()
 
     def setUp(self):
-        self.app = wx.App()
         data = numpy.zeros((2160, 2560), dtype=numpy.uint16)
         dataRGB = numpy.zeros((2160, 2560, 4))
         metadata = {'Hardware name': 'Andor ZYLA-5.5-USB3 (s/n: VSC-01959)',
@@ -858,6 +872,9 @@ class TestSpatialExport(unittest.TestCase):
         spec_data = model.DataArray(data, md)
         self.spec_stream = stream.StaticSpectrumStream("test spec", spec_data)
 
+        spec_float_data = model.DataArray(data.astype(numpy.float64), md)
+        self.spec_float_stream = stream.StaticSpectrumStream("test spec float", spec_float_data)
+
         # Wait for all the streams to get an RGB image
         time.sleep(0.5)
 
@@ -878,6 +895,18 @@ class TestSpatialExport(unittest.TestCase):
         view_pos = [-0.001211588332679978, -0.00028726176273402186]
         draw_merge_ratio = 0.3
         proj = RGBSpatialProjection(self.spec_stream)
+        streams = [self.streams[1], proj]
+        orig_md = [s.raw[0].metadata.copy() for s in streams]
+        exp_data = img.images_to_export_data(streams, view_hfw, view_pos, draw_merge_ratio, True)
+        self.assertEqual(exp_data[0].shape, (3379, 4199))  # greyscale
+        for s, md in zip(streams, orig_md):
+            self.assertEqual(md, s.raw[0].metadata)
+
+    def test_spec_float_pp(self):
+        view_hfw = (0.00025158414075691866, 0.00017445320835792754)
+        view_pos = [-0.001211588332679978, -0.00028726176273402186]
+        draw_merge_ratio = 0.3
+        proj = RGBSpatialProjection(self.spec_float_stream)
         streams = [self.streams[1], proj]
         orig_md = [s.raw[0].metadata.copy() for s in streams]
         exp_data = img.images_to_export_data(streams, view_hfw, view_pos, draw_merge_ratio, True)
@@ -976,6 +1005,47 @@ class TestSpatialExport(unittest.TestCase):
         self.assertEqual(len(exp_data[0].shape), 2)  # greyscale
         self.assertEqual(exp_data[0].shape[1], img.CROP_RES_LIMIT)
 
+    def test_fake_canvas(self):
+        """
+        Test that a fake canvas is used when the original canvas has a ruler overlay. The rulers are
+        drawn on this fake canvas and they are shown in the print-ready export.
+        """
+        # Print ready format
+        view_hfw = (0.00025158414075691866, 0.00017445320835792754)
+        view_pos = [-0.001211588332679978, -0.00028726176273402186]
+        draw_merge_ratio = 0.3
+
+        # Export while canvas=None
+        e_data = img.images_to_export_data(self.streams, view_hfw, view_pos, draw_merge_ratio, False)
+        e_da = e_data[0]
+
+        # Add a canvas and make it add a ruler overlay
+        canvas = miccanvas.DblMicroscopeCanvas(self.panel)
+        tab_mod = self.create_simple_tab_model()
+        tab_mod.tool.choices |= {TOOL_RULER}
+        view = tab_mod.focussedView.value
+        self.add_control(canvas, wx.EXPAND, proportion=1, clear=True)
+        canvas.setView(view, tab_mod)
+
+        # Export while there is a canvas with a ruler overlay but there are no drawn rulers
+        ex_data = img.images_to_export_data(self.streams, view_hfw, view_pos, draw_merge_ratio, False, canvas)
+        ex_da = ex_data[0]
+
+        self.assertTrue(numpy.any(e_da == ex_da),
+                        msg="Canvas are not equal, which means there are rulers shown in the export")
+
+        # Create a ruler
+        p_start_pos = tuple(view_pos)
+        p_end_pos = (0.00055, 0.00055)
+        ruler = wol.Ruler(canvas, p_start_pos, p_end_pos)
+        canvas.ruler_overlay._rulers.append(ruler)
+
+        # Export while there is a canvas with a ruler overlay and a ruler was drawn on it.
+        # The ruler overlay is forced to draw the ruler on a fake canvas and the ruler is shown in the export.
+        exp_data_r = img.images_to_export_data(self.streams, view_hfw, view_pos, draw_merge_ratio, False, canvas)
+        exp_da_r = exp_data_r[0]
+        self.assertTrue(numpy.any(ex_da != exp_da_r),
+                        msg="Canvas are equal, which means there in no drawn ruler to be shown in the export")
 
 class TestSpatialExportPyramidal(unittest.TestCase):
 
