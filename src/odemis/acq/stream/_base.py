@@ -1160,7 +1160,7 @@ class Stream(object):
                 # Pyramidal => use the smallest version
                 data = self._getMergedRawImage(data, data.maxzoom)
 
-            # We only do background subtraction when automatically selecting raw
+            # We only do backgrsrc/odemis/acq/stream/_base.pyound subtraction when automatically selecting raw
             bkg = self.background.value
             if bkg is not None:
                 try:
@@ -1222,8 +1222,10 @@ class Stream(object):
         shear = md.get(model.MD_SHEAR, 0)
         translation = md.get(model.MD_POS, (0, 0))
         size = raw.shape[-1], raw.shape[-2]
-        tform = AffineTransform(rotation=rotation, scale=pxs, shear=shear, translation=translation).inverse()
-        pixel_pos_c = tform(p_pos)
+        tform = AffineTransform(rotation=rotation, scale=pxs, translation=translation)
+        L = numpy.array([(1, 0), (-shear, 1)])
+        tform.transformation_matrix = numpy.dot(tform.transformation_matrix, L)
+        pixel_pos_c = tform.inverse()(p_pos)
         # a "-" is used for the y coordinate because Y axis has the opposite direction in physical coordinates
         pixel_pos = int(pixel_pos_c[0] + size[0] / 2), - int(pixel_pos_c[1] - size[1] / 2)
         if 0 <= pixel_pos[0] < size[0] and 0 <= pixel_pos[1] < size[1]:
